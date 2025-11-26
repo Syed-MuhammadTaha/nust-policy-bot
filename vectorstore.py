@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import re
 from typing import List, Tuple, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, models
@@ -144,9 +145,24 @@ def process_and_store(file_path: str, force_reprocess: bool = False, chunking_st
         print("☁️  Generating dense embeddings via Jina Cloud API...")
         dense_embeddings = jina_embeddings.embed_documents(documents)
         
+        # Get source URL for citations (if available)
+        source_url = Config.PDF_SOURCE_URLS.get(file_name, None)
+        
         # Create points with embeddings and full text for BM25
         points = []
         for idx, (doc, dense_emb) in enumerate(zip(docs, dense_embeddings)):
+            # Extract text for highlighting - keep it EXACTLY as in PDF
+            raw_text = doc.page_content[:80].strip()
+            
+            # MINIMAL normalization - only fix spacing issues:
+            # 1. Collapse multiple spaces/newlines to single space
+            # 2. KEEP all special chars (hyphens, slashes, etc.) - they're in the PDF!
+            normalized = re.sub(r'\s+', ' ', raw_text)  # Only collapse whitespace
+            
+            # Take first 4-6 words for reliable matching
+            words = normalized.split()[:6]
+            highlight_text = ' '.join(words) if words else ''
+            
             point = PointStruct(
                 id=str(uuid.uuid4()),  # Generate unique UUID for each point
                 vector={
@@ -155,8 +171,10 @@ def process_and_store(file_path: str, force_reprocess: bool = False, chunking_st
                 payload={
                     "document": doc.page_content,  # Qdrant will index this for BM25
                     "source": doc.metadata.get('source', file_name),
+                    "source_url": source_url,  # URL for grounded citations
                     "page": doc.metadata.get('page', 'N/A'),
                     "chunk_title": doc.metadata.get('chunk_title', ''),
+                    "highlight_text": highlight_text,  # For PDF search highlighting
                 }
             )
             points.append(point)

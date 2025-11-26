@@ -1,5 +1,6 @@
 """
-Simplified preprocessing pipeline - reliable and effective.
+Structure-aware preprocessing pipeline for robust document chunking.
+Preserves semantic boundaries while maintaining optimal chunk sizes.
 """
 
 import os
@@ -11,14 +12,22 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 class SimplePreprocessor:
-    """Simplified but effective document preprocessing."""
+    """
+    Structure-aware document preprocessing with intelligent chunking.
     
-    def __init__(self, chunk_size=800, chunk_overlap=200, strategy="semantic"):
+    Strategy:
+    1. Detects document structure (headings, sections, numbered lists)
+    2. Preserves semantic boundaries (prevents breaking mid-concept)
+    3. Applies recursive splitting for large sections
+    4. Optimal chunk sizes: 300-500 words (≈700-1200 tokens)
+    """
+    
+    def __init__(self, chunk_size=1000, chunk_overlap=150, strategy="structure_aware"):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.strategy = strategy
         
-        # Enhanced separators for better semantic splitting
+        # Enhanced separators for structure-aware splitting
         self.separators = [
             "\n\n\n",  # Section breaks
             "\n\n",    # Paragraph breaks  
@@ -50,38 +59,38 @@ class SimplePreprocessor:
             if not text.strip():
                 continue
             
-            # Detect if this page has structure
-            has_structure = self._has_structure(text)
-            
-            if self.strategy == "semantic" and has_structure:
-                # Try to split by sections
-                sections = self._split_by_sections(text)
+            if self.strategy == "structure_aware":
+                # Structure-aware chunking: preserves headings and semantic boundaries
+                sections = self._split_by_structure(text)
                 
                 for section in sections:
-                    if len(section['text']) > self.chunk_size * 1.5:
-                        # Section too large, split it
-                        sub_chunks = self._split_text(section['text'])
+                    section_text = section['text']
+                    section_title = section.get('title', '')
+                    
+                    # If section is too large, recursively split it
+                    if len(section_text) > self.chunk_size:
+                        sub_chunks = self._split_text(section_text)
                         for chunk_text in sub_chunks:
                             all_docs.append(Document(
                                 page_content=chunk_text,
                                 metadata={
                                     'source': file_name,
                                     'page': page_num,
-                                    'chunk_title': section.get('title', '')[:100],
+                                    'chunk_title': section_title[:200],
                                 }
                             ))
                     else:
-                        # Section fits in one chunk
+                        # Section fits in one chunk - preserve it whole
                         all_docs.append(Document(
-                            page_content=section['text'],
+                            page_content=section_text,
                             metadata={
                                 'source': file_name,
                                 'page': page_num,
-                                'chunk_title': section.get('title', '')[:100],
+                                'chunk_title': section_title[:200],
                             }
                         ))
             else:
-                # Use fixed chunking
+                # Fallback to fixed chunking
                 chunks = self._split_text(text)
                 for chunk_text in chunks:
                     title = self._extract_title(chunk_text)
@@ -110,65 +119,66 @@ class SimplePreprocessor:
         
         return text.strip()
     
-    def _has_structure(self, text: str) -> bool:
-        """Check if text has clear structure (headers, sections)."""
-        # Look for numbered sections
-        if re.search(r'\n\d+\.(?:\d+\.)*\s+[A-Z]', text):
-            return True
-        
-        # Look for headers (all caps lines)
-        if re.search(r'\n[A-Z][A-Z\s]{8,}\n', text):
-            return True
-        
-        # Look for consistent list structures
-        if len(re.findall(r'\n\s*[•\-\*]\s+', text)) >= 3:
-            return True
-        
-        return False
-    
-    def _split_by_sections(self, text: str) -> List[Dict[str, str]]:
-        """Split text into logical sections."""
+    def _split_by_structure(self, text: str) -> List[Dict[str, str]]:
+        """
+        Structure-aware splitting: detects and preserves semantic boundaries.
+        Looks for headings, numbered sections, and other structural markers.
+        """
         sections = []
         
-        # Try numbered sections first (1., 1.1., etc.)
-        pattern = r'(\n\d+\.(?:\d+\.)*\s+[^\n]{5,100})'
-        matches = list(re.finditer(pattern, text))
+        # Multi-pattern detection for comprehensive structure recognition
+        # Pattern 1: ALL CAPS HEADINGS (e.g., "PAKISTANI / NATIONAL DRESS FOR MEN")
+        # Pattern 2: Numbered sections (e.g., "1. Introduction")
+        # Pattern 3: Numbered subsections (e.g., "1.1. Details")
         
-        if matches:
-            for i, match in enumerate(matches):
-                start = match.start()
-                end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        # Combined pattern that catches multiple heading styles
+        patterns = [
+            r'\n([A-Z][A-Z\s/]{8,})\n',  # ALL CAPS HEADINGS
+            r'\n(\d+\.\s+[A-Z][^\n]{5,80})\n',  # Numbered sections starting with capital
+            r'\n([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*:)',  # Title Case with colon
+        ]
+        
+        all_matches = []
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                all_matches.append((match.start(), match.end(), match.group(1).strip()))
+        
+        # Sort matches by position
+        all_matches.sort(key=lambda x: x[0])
+        
+        if all_matches:
+            # Split text by detected structural boundaries
+            for i, (start, end, title) in enumerate(all_matches):
+                # Determine section boundaries
+                section_start = start
+                if i + 1 < len(all_matches):
+                    section_end = all_matches[i + 1][0]
+                else:
+                    section_end = len(text)
                 
-                section_text = text[start:end].strip()
-                title = match.group(1).strip()
+                section_text = text[section_start:section_end].strip()
                 
-                sections.append({
-                    'title': title,
-                    'text': section_text
-                })
-        else:
-            # Try header-based sections (ALL CAPS)
-            pattern = r'\n([A-Z][A-Z\s]{8,})\n'
-            matches = list(re.finditer(pattern, text))
-            
-            if matches:
-                for i, match in enumerate(matches):
-                    start = match.start()
-                    end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-                    
-                    section_text = text[start:end].strip()
-                    title = match.group(1).strip()
-                    
+                # Only create section if it has meaningful content
+                if len(section_text) > 50:  # Minimum viable section
                     sections.append({
                         'title': title,
                         'text': section_text
                     })
-            else:
-                # No clear sections, return as single section
-                sections.append({
-                    'title': '',
-                    'text': text
-                })
+            
+            # Capture any text before first heading
+            if all_matches[0][0] > 100:  # Significant text before first heading
+                intro_text = text[:all_matches[0][0]].strip()
+                if len(intro_text) > 50:
+                    sections.insert(0, {
+                        'title': 'Introduction',
+                        'text': intro_text
+                    })
+        else:
+            # No structural markers found - treat as single section
+            sections.append({
+                'title': '',
+                'text': text
+            })
         
         return sections
     
@@ -196,18 +206,18 @@ class SimplePreprocessor:
         return text[:60].strip() + "..."
 
 
-def preprocess_pdf_simple(file_path: str, chunk_size=800, chunk_overlap=200, strategy="semantic") -> List[Document]:
+def preprocess_pdf_simple(file_path: str, chunk_size=1000, chunk_overlap=150, strategy="structure_aware") -> List[Document]:
     """
-    Simple but effective PDF preprocessing.
+    Structure-aware PDF preprocessing with intelligent chunking.
     
     Args:
         file_path: Path to PDF file
-        chunk_size: Target chunk size in characters
-        chunk_overlap: Overlap between chunks
-        strategy: "semantic" or "fixed"
+        chunk_size: Target chunk size (default 1000 chars ≈ 300-500 words)
+        chunk_overlap: Overlap between chunks (default 150 ≈ 10-15%)
+        strategy: "structure_aware" (recommended) or "fixed"
     
     Returns:
-        List of Document objects
+        List of Document objects with preserved semantic boundaries
     """
     preprocessor = SimplePreprocessor(chunk_size, chunk_overlap, strategy)
     return preprocessor.process_pdf(file_path)

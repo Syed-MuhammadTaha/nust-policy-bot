@@ -15,9 +15,10 @@ Powered by Qdrant vector database.
   - ☁️ **Dense Embeddings** (Jina Cloud API): High-quality semantic understanding
   - ☁️ **BM25 Keyword** (Qdrant built-in): Fast keyword matching
   - ☁️ **Reranking** (Jina Reranker API): Precision reranking
+- **📚 Grounded Citations**: Every response includes clickable links to source PDFs with page numbers
 - **📤 Document Upload**: Upload PDFs via Streamlit UI or batch process
 - **🗄️ Qdrant Vector Store**: Production-ready with web UI
-- **📊 Smart Chunking**: Semantic or fixed strategies
+- **📊 Structure-Aware Chunking**: Preserves semantic boundaries for better context
 - **💾 Persistent Storage**: Data survives restarts
 - **⚡ Fast on Slow Machines**: All heavy lifting done in the cloud
 - **🎨 Visual Dashboard**: Explore embeddings at http://localhost:6333/dashboard

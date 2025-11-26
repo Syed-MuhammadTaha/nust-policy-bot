@@ -32,15 +32,31 @@ class Config:
     UPLOAD_FOLDER = "data"
     PROCESSED_FILES_PATH = "qdrant_metadata/processed_files.json"
     
+    # PDF Source URLs for Grounded Citations
+    # Map PDF filenames to their online URLs
+    PDF_SOURCE_URLS = {
+        "Code_of_Ethics.pdf":"https://nust.edu.pk/wp-content/uploads/2020/03/Code_of_Ethics.pdf",
+        "Protection-against-Harassment-of-Women.pdf":"https://nust.edu.pk/wp-content/uploads/2020/03/Protection-against-Harassment-of-Women.pdf",
+        "NUST-Fee-Policy-Salient-Features.pdf":"https://nust.edu.pk/wp-content/uploads/2021/09/NUST-Fee-Policy-Salient-Features.pdf",
+        "Code_of_Conduct.pdf":"https://nust.edu.pk/wp-content/uploads/2025/10/552978584685WP_-_Code_of_Conduct_-_Web.pdf",
+        "Inbound_Policy.pdf":"https://nust.edu.pk/wp-content/uploads/2025/10/552978584685WP_-_Inbound_-_Web.pdf",
+        "DinningPolicies.pdf":"https://nust.edu.pk/wp-content/uploads/2024/06/MARCOMS-217-Dress-Norms-Dinning-Etiquette-V.7.0-24062024.pdf",
+    }
+    
+    # Citation format preferences
+    ENABLE_CITATIONS = True
+    ENABLE_PAGE_LINKS = True  # Include page numbers in citations
+    CITATION_STYLE = "inline"  # Options: "inline", "footnote"
+    
     # Chunking Configuration
-    CHUNKING_STRATEGY = "semantic"  # Options: "semantic", "fixed"
-    CHUNK_SIZE = 800  # Larger chunks for better context
-    CHUNK_OVERLAP = 200  # Substantial overlap for continuity
+    CHUNKING_STRATEGY = "fixed"  # Fixed chunking works consistently across all document types
+    CHUNK_SIZE = 1200  # Balanced size for complete context without being too large
+    CHUNK_OVERLAP = 250  # Good overlap to maintain context between chunks
     
     # Retrieval Configuration
-    PREFETCH_LIMIT = 20  # Number of results from each sub-query (dense + sparse)
-    RERANK_LIMIT = 10    # Number of candidates to send to reranker
-    FINAL_LIMIT = 5      # Final number of results after reranking
+    PREFETCH_LIMIT = 10  # Number of results from each sub-query (dense + sparse)
+    RERANK_LIMIT = 6     # Number of candidates to send to reranker
+    FINAL_LIMIT = 3      # Final number of results after reranking
 
     @staticmethod
     def display():

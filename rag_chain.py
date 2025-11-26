@@ -1,4 +1,5 @@
 import requests
+from urllib.parse import quote
 from vectorstore import qdrant_client, jina_embeddings
 from qdrant_client.models import models
 from config import Config
@@ -143,30 +144,55 @@ def retrieve_relevant_chunks_hybrid(query: str, prefetch_limit: int = None, fina
         if not reranked_points:
             return "No relevant information found after reranking."
         
-        # Format the retrieved chunks with enhanced metadata
-        response = "**🎯 Hybrid Search Results** (Jina Dense + Qdrant BM25 → Jina Rerank)\n\n"
+        # Format the retrieved chunks with enhanced metadata and grounded citations
+        response = "**🎯 Retrieved Information**\n\n"
         
         for i, point in enumerate(reranked_points, 1):
             payload = point.payload
             source = payload.get('source', 'Unknown')
+            source_url = payload.get('source_url', None)
             page = payload.get('page', 'N/A')
             chunk_title = payload.get('chunk_title', '')
             document = payload.get('document', '')
+            highlight_text = payload.get('highlight_text', '')
             score = point.score
             
-            # Header with metadata and score
-            response += f"**Chunk {i}** (Rerank Score: {score:.4f})"
-            if chunk_title:
-                response += f" - *{chunk_title}*"
-            response += f"\n📄 Source: {source} | Page: {page}\n\n"
-            
-            # Content
+            # Content first (main answer)
             response += f"{document}\n\n"
+            
+            # Grounded citation with clickable link
+            if Config.ENABLE_CITATIONS:
+                response += f"**📚 Citation {i}:** "
+                
+                if source_url and Config.ENABLE_PAGE_LINKS:
+                    # Create page-specific deep link with text fragment highlighting
+                    if highlight_text and page != 'N/A' and len(highlight_text.split()) >= 3:
+                        # Percent-encode ALL characters including hyphens
+                        # Manual encoding to ensure hyphens become %2D
+                        encoded_text = quote(highlight_text, safe='')
+                        # Force encode hyphens (quote doesn't encode them by default)
+                        encoded_text = encoded_text.replace('-', '%2D')
+                        # Format: #page=X:~:text=encoded-text
+                        page_link = f"{source_url}#page={page}:~:text={encoded_text}"
+                    elif page != 'N/A':
+                        # Fallback: Just page number if text is too short
+                        page_link = f"{source_url}#page={page}"
+                    else:
+                        page_link = source_url
+                    response += f"[{source}, Page {page}]({page_link})"
+                elif source_url:
+                    response += f"[{source}]({source_url})"
+                else:
+                    response += f"{source}, Page {page}"
+                
+                # Add confidence score
+                response += f" • Relevance: {score:.2%}\n\n"
+            
             response += "---\n\n"
         
-        # Add search method info
-        response += f"\n*Search Strategy: Jina Dense (Cloud) + Qdrant BM25 (Built-in) → Jina Rerank (Cloud)*"
-        response += f"\n*All processing done in the cloud - no local compute needed!*"
+        # Add methodology footer
+        response += "\n*💡 Retrieval Method: Jina Dense Embeddings + Qdrant BM25 Keyword Search → Jina Reranker*\n"
+        response += "*✅ All citations link to original source documents*"
         
         return response
         
