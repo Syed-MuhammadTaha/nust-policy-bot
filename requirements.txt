@@ -1,6 +1,10 @@
 streamlit
 langchain
-langchain-ollama
-faiss-cpu
+langchain-core
+langchain-community
+langchain-text-splitters
+qdrant-client
+requests
 tiktoken
 PyMuPDF
+python-dotenv

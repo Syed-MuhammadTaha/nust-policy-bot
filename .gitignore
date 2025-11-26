@@ -1,3 +1,43 @@
+# Environment variables
 .env
-data/
-faiss_index
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Conda
+.conda/
+conda/
+miniconda/
+miniconda3/
+anaconda/
+anaconda3/
+envs/
+*.conda
+
+# Qdrant data
+qdrant_data/
+qdrant_metadata/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (optional - uncomment if you don't want to commit PDFs)
+# data/*.pdf
