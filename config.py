@@ -52,6 +52,7 @@ class Config:
     # Citation format preferences
     ENABLE_CITATIONS = True
     ENABLE_PAGE_LINKS = True  # Include page numbers in citations
+    ENABLE_SMART_HIGHLIGHTING = True  # Use semantic matching to find relevant sentences for PDF highlighting
     CITATION_STYLE = "inline"  # Options: "inline", "footnote"
     
     # Chunking Configuration

@@ -1,12 +1,15 @@
 import re
 import requests
+import json
+from typing import Dict, List
 from vectorstore import qdrant_client, jina_embeddings
 from qdrant_client.models import models
 from config import Config
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 
-# Initialize Google Gemini LLM
+# Initialize Google Gemini LLM with structured output
 llm = ChatGoogleGenerativeAI(
     model=Config.GOOGLE_MODEL,
     google_api_key=Config.GOOGLE_API_KEY,
@@ -14,37 +17,52 @@ llm = ChatGoogleGenerativeAI(
     max_output_tokens=Config.GENERATION_MAX_TOKENS
 )
 
+# Pydantic model for structured LLM output
+class RAGResponse(BaseModel):
+    """Structured response from LLM with clean answer and highlight mappings."""
+    answer: str = Field(description="The complete answer with simple citation markers like [1], [2]")
+    highlights: Dict[int, List[str]] = Field(
+        description="Mapping of citation number to list of exact quotes from that source. Each quote should be 5-15 words taken exactly from the context.",
+        example={1: ["exact quote from source 1"], 2: ["first quote from source 2", "second quote from source 2"]}
+    )
+
+# Note: Using JSON mode in prompt instead of structured output binding
+# This is more reliable across different LLM providers
+
 # Create RAG prompt template with strategic inline citation instructions
 rag_prompt = ChatPromptTemplate.from_messages([
     ("system", """You are a helpful assistant answering questions about university policies and documents.
 
 Answer the question based ONLY on the provided context below. Be concise, accurate, and factual.
 
-CRITICAL CITATION RULE - READ CAREFULLY:
-You MUST minimize citations. Cite ONCE per complete idea or paragraph, NOT after every sentence.
+CRITICAL CITATION RULE - STRUCTURED OUTPUT:
+You MUST provide your response in a structured format with clean citations and separate highlight mappings.
 
-Citation Strategy:
-1. If ALL information in a paragraph comes from ONE source → Cite [X] ONLY at the END of that paragraph
-2. If you switch sources mid-paragraph → Cite when switching: "Info from source 1. Info from source 2 [2]."
-3. For multiple sources in one place → Use separate brackets: [1][2] or [2][3]
-4. NEVER cite the same source in consecutive sentences
-5. Aim for 1-2 citations total per paragraph, not 1 per sentence
+Response Structure:
+1. "answer": Your complete answer with SIMPLE citation markers [1], [2], [3]
+2. "highlights": A mapping of citation numbers to lists of exact 5-15 word quotes from those sources
 
-Each source in context is numbered [Source X]. ONLY cite sources you actually use.
+Citation Strategy in Answer:
+- Use SIMPLE markers: [1], [2], [3] (NO quotes inline)
+- Cite ONCE per paragraph/idea, not every sentence
+- Place at END of paragraph if all info from one source
+- Each source in context is numbered [Source X]
 
-EXCELLENT example (minimal citations ✓):
-"NUST has implemented the Protection against Harassment of Women at the Workplace Act to ensure a safe working environment. The Board of Governors approved the creation of a Harassment Complaint Cell and Inquiry Committee, both now fully functional. This policy is incorporated into Chapter-10 of the HR Handbook, and queries can be directed to C3A [1].
+Highlights Mapping Rules:
+- Extract 1-3 exact quotes (5-15 words each) from each cited source
+- Quotes must be EXACTLY from the context without modification
+- Quotes should directly support the claims in your answer
+- If you use multiple pieces of info from same source, include multiple highlights
 
-Sexual harassment is strictly prohibited and includes unwanted sexual advances or conduct of a sexual nature [2][3]."
+EXCELLENT ✓:
+- Clean answer with simple [1], [2]
+- Multiple highlights per source allowed
+- Exact quotes in highlights mapping
 
-(Note: Only 2 citations for 5 sentences = Clean and minimal)
-
-BAD example (over-citing ✗):
-"NUST has implemented the Protection Act [1]. The Board approved bodies [1]. These are functional [1]. Policy is in HR Handbook [1]. Contact C3A for queries [1].
-
-Sexual harassment is prohibited [2]. It includes unwanted advances [2]. Violations are serious [3]."
-
-(Note: 8 citations for 7 sentences = Too many!)
+BAD ✗:
+- Inline quotes in answer: [1: "quote"] 
+- Generic/paraphrased highlights
+- Missing highlights for cited sources
 
 CRITICAL - ABSTENTION RULE:
 If the context does NOT contain information to answer the question, you MUST respond EXACTLY:
@@ -55,22 +73,117 @@ ABSTAIN in these cases:
 - Context discusses something different than what's asked
 - Context is too vague or doesn't provide specific details needed
 - Question asks for personal opinions or predictions
-
-Example abstention cases:
-❌ Q: "What's the weather today?" → ABSTAIN (not in documents)
-❌ Q: "Who will win the election?" → ABSTAIN (not in documents)
-❌ Q: "What's your favorite food?" → ABSTAIN (opinion question)
-✅ Q: "What is the harassment policy?" → ANSWER (if in documents)
 """),
     ("human", """Context:
 {context}
 
 Question: {question}
 
-Answer (remember: cite ONCE per paragraph/idea, not per sentence):""")
+IMPORTANT: You MUST respond with a valid JSON object in this exact format:
+{{
+  "answer": "Your answer with simple citations [1], [2], etc.",
+  "highlights": {{
+    1: ["exact quote 1 from source 1", "exact quote 2 from source 1"],
+    2: ["exact quote from source 2"]
+  }}
+}}
+
+Answer:""")
 ])
 
 print("✅ Loaded RAG prompt template with inline citations")
+
+
+def encode_text_fragment(text: str) -> str:
+    """
+    Properly encode text for PDF #:~:text= fragment.
+    Encodes ALL special characters that could break URL text fragments.
+    
+    Args:
+        text: Text to encode
+        
+    Returns:
+        Fully encoded text safe for use in URL text fragments
+    """
+    from urllib.parse import quote
+    
+    # First pass: Standard URL encoding (encodes most special chars)
+    encoded = quote(text, safe='')
+    
+    # Second pass: Manually encode "unreserved" characters that quote() skips
+    # but can break PDF text fragment matching
+    char_map = {
+        '.': '%2E',   # Period
+        '-': '%2D',   # Hyphen
+        '_': '%5F',   # Underscore
+        '~': '%7E',   # Tilde
+        '/': '%2F',   # Forward slash (quote encodes this, but double-check)
+        '\\': '%5C',  # Backslash
+        '?': '%3F',   # Question mark
+        '!': '%21',   # Exclamation
+        '#': '%23',   # Hash
+        '&': '%26',   # Ampersand
+        '=': '%3D',   # Equals
+        '+': '%2B',   # Plus
+        ',': '%2C',   # Comma
+        ';': '%3B',   # Semicolon
+        ':': '%3A',   # Colon
+        "'": '%27',   # Single quote
+        '"': '%22',   # Double quote
+        '(': '%28',   # Open paren
+        ')': '%29',   # Close paren
+        '[': '%5B',   # Open bracket
+        ']': '%5D',   # Close bracket
+        '{': '%7B',   # Open brace
+        '}': '%7D',   # Close brace
+        '<': '%3C',   # Less than
+        '>': '%3E',   # Greater than
+        '@': '%40',   # At sign
+        '*': '%2A',   # Asterisk
+        '|': '%7C',   # Pipe
+        '`': '%60',   # Backtick
+        '^': '%5E',   # Caret
+    }
+    
+    for char, encoded_char in char_map.items():
+        encoded = encoded.replace(char, encoded_char)
+    
+    return encoded
+
+
+def parse_citations_with_quotes(answer: str) -> dict:
+    """
+    Parse citations with exact quotes from LLM answer.
+    
+    Extracts citations in format: [X: "exact quote"]
+    
+    Returns:
+        dict: {citation_num: exact_quote}
+        Example: {1: "exact quote from source", 2: "another quote"}
+    """
+    citations_map = {}
+    
+    # Pattern to match [X: "quote"] format
+    # Matches: [1: "text"], [2: "more text"], etc.
+    pattern = r'\[(\d+):\s*["\']([^"\']+)["\']\]'
+    matches = re.findall(pattern, answer)
+    
+    for match in matches:
+        cite_num = int(match[0])
+        quote_text = match[1].strip()
+        citations_map[cite_num] = quote_text
+    
+    # Also check for simple [X] format (fallback for backward compatibility)
+    simple_pattern = r'\[(\d+)\]'
+    simple_matches = re.findall(simple_pattern, answer)
+    for match in simple_matches:
+        cite_num = int(match)
+        if cite_num not in citations_map:
+            citations_map[cite_num] = ""  # No quote provided
+    
+    return citations_map
+
+
 
 
 def jina_rerank(query: str, documents: list, top_n: int = None) -> list:
@@ -239,16 +352,16 @@ def retrieve_relevant_chunks_hybrid(query: str, prefetch_limit: int = None, fina
                     response += f"[{source}]({source_url})"
                 else:
                     response += f"{source}, Page {page}"
-                
+        
                 # Add confidence score
                 response += f" • Relevance: {score:.2%}\n\n"
             
-            response += "---\n\n"
+        response += "---\n\n"
     
         # Add methodology footer
         response += "\n*💡 Retrieval Method: Jina Dense Embeddings + Qdrant BM25 Keyword Search → Jina Reranker*\n"
         response += "*✅ All citations link to original source documents*"
-        
+    
         return response
 
     except Exception as e:
@@ -256,10 +369,17 @@ def retrieve_relevant_chunks_hybrid(query: str, prefetch_limit: int = None, fina
         return f"⚠️ Error during search: {str(e)}\n\nMake sure:\n1. Qdrant is running: `docker-compose up -d`\n2. JINA_API_KEY is set in .env"
 
 
-def generate_answer_with_citations(query: str) -> tuple:
+def generate_answer_with_citations(query: str, stream: bool = False):
     """
     Full RAG pipeline: Retrieve → Rerank → Generate with Google Gemini.
-    Returns (answer_with_citations, retrieved_chunks_metadata).
+    
+    Args:
+        query: User question
+        stream: If True, yields chunks for streaming. If False, returns complete response.
+    
+    Returns:
+        If stream=False: (answer_text, chunks_metadata) tuple
+        If stream=True: Generator that yields dict with 'type' and 'content'
     """
     try:
         # Check if collection exists
@@ -301,38 +421,8 @@ def generate_answer_with_citations(query: str) -> tuple:
         if not reranked_points:
             return "No relevant information found."
         
-        # Step 3: Deduplicate chunks from same PDF page (merge them)
-        page_to_chunks = {}  # Key: (source_url, page) -> list of chunks
-        for point in reranked_points:
-            payload = point.payload
-            source_url = payload.get('source_url', None)
-            page = payload.get('page', 'N/A')
-            key = (source_url, page)
-            
-            if key not in page_to_chunks:
-                page_to_chunks[key] = []
-            page_to_chunks[key].append(point)
-        
-        # Merge chunks from same page - combine content, keep highest score
-        deduplicated_points = []
-        for key, chunks in page_to_chunks.items():
-            if len(chunks) == 1:
-                deduplicated_points.append(chunks[0])
-            else:
-                # Multiple chunks from same page - merge them
-                best_chunk = max(chunks, key=lambda x: x.score)
-                combined_content = "\n\n".join([c.payload.get('document', '') for c in chunks])
-                
-                # Update the payload with combined content
-                best_chunk.payload['document'] = combined_content
-                best_chunk.payload['merged_count'] = len(chunks)
-                deduplicated_points.append(best_chunk)
-        
-        # Sort by score (highest first)
-        deduplicated_points.sort(key=lambda x: x.score, reverse=True)
-        
-        # Step 3.5: Check relevance threshold for abstention
-        best_score = deduplicated_points[0].score if deduplicated_points else 0.0
+        # Step 3: Check relevance threshold for abstention
+        best_score = reranked_points[0].score if reranked_points else 0.0
         
         if best_score < Config.MIN_RELEVANCE_SCORE:
             # Score too low - likely off-topic question
@@ -350,7 +440,7 @@ def generate_answer_with_citations(query: str) -> tuple:
         citations = []
         chunks_metadata = []
         
-        for i, point in enumerate(deduplicated_points, 1):
+        for i, point in enumerate(reranked_points, 1):
             payload = point.payload
             source = payload.get('source', 'Unknown')
             source_url = payload.get('source_url', None)
@@ -358,7 +448,6 @@ def generate_answer_with_citations(query: str) -> tuple:
             chunk_title = payload.get('chunk_title', '')
             document = payload.get('document', '')
             score = point.score
-            merged_count = payload.get('merged_count', 1)
             
             # Add to context for LLM
             context_parts.append(f"[Source {i}]: {document}")
@@ -375,8 +464,6 @@ def generate_answer_with_citations(query: str) -> tuple:
                 citation += f"{source}, Page {page}"
             
             citation += f" • {score:.0%}"
-            if merged_count > 1:
-                citation += f" *(merged {merged_count} chunks)*"
             citations.append(citation)
             
             # Store metadata for sidebar display
@@ -387,7 +474,6 @@ def generate_answer_with_citations(query: str) -> tuple:
                 "page": page,
                 "chunk_title": chunk_title,
                 "score": score,
-                "merged_count": merged_count,
                 "preview": document[:150] + "..." if len(document) > 150 else document
             })
         
@@ -398,67 +484,256 @@ def generate_answer_with_citations(query: str) -> tuple:
         # Format the prompt with context and question
         messages = rag_prompt.format_messages(context=context, question=query)
         
-        # Generate answer
-        response_obj = llm.invoke(messages)
-        answer = response_obj.content
+        # STREAMING MODE
+        if stream:
+            def stream_generator():
+                """Generator for streaming response with citations."""
+                answer = ""
+                
+                # Yield metadata first (for sidebar update)
+                yield {"type": "metadata", "content": chunks_metadata}
+                
+                # Stream the answer
+                for chunk in llm.stream(messages):
+                    if hasattr(chunk, 'content') and chunk.content:
+                        answer += chunk.content
+                        yield {"type": "text", "content": chunk.content}
+                
+                # Parse citations with quotes from answer
+                citations_with_quotes = parse_citations_with_quotes(answer)
+                cited_indices = set(citations_with_quotes.keys())
+                
+                # Use LLM-provided quotes for highlighting
+                chunk_highlight_map = {}
+                if Config.ENABLE_SMART_HIGHLIGHTING:
+                    for cite_num, quote in citations_with_quotes.items():
+                        if quote:  # Only highlight if LLM provided a quote
+                            chunk_highlight_map[cite_num] = quote
+                        # If no quote, just skip highlighting for this citation
+                
+                # Filter to only show cited sources and rebuild with highlights
+                cited_citations = []
+                cited_metadata = []
+                
+                for i, metadata in enumerate(chunks_metadata, 1):
+                    if i in cited_indices:
+                        # Rebuild citation with highlight
+                        source = metadata.get('source', 'Unknown')
+                        source_url = metadata.get('source_url', None)
+                        page = metadata.get('page', 'N/A')
+                        score = metadata.get('score', 0)
+                        highlight_text = chunk_highlight_map.get(i, '')
+                        
+                        citation = f"**[{i}]** "
+                        if source_url and page != 'N/A' and highlight_text:
+                            # Add text fragment highlighting with comprehensive encoding
+                            encoded_text = encode_text_fragment(highlight_text)
+                            page_link = f"{source_url}#page={page}:~:text={encoded_text}"
+                            citation += f"[{source}, Page {page}]({page_link})"
+                        elif source_url and page != 'N/A':
+                            page_link = f"{source_url}#page={page}"
+                            citation += f"[{source}, Page {page}]({page_link})"
+                        elif source_url:
+                            citation += f"[{source}]({source_url})"
+                        else:
+                            citation += f"{source}, Page {page}"
+                        
+                        citation += f" • {score:.0%}"
+                        
+                        cited_citations.append(citation)
+                        
+                        metadata_copy = metadata.copy()
+                        metadata_copy['cited'] = True
+                        metadata_copy['highlight_text'] = highlight_text
+                        cited_metadata.append(metadata_copy)
+                    else:
+                        metadata_copy = metadata.copy()
+                        metadata_copy['cited'] = False
+                        cited_metadata.append(metadata_copy)
+                
+                # Yield citations
+                if cited_citations:
+                    citations_text = "\n\n---\n\n**📚 Sources:**\n\n" + "\n".join(cited_citations)
+                else:
+                    citations_text = "\n\n*Note: No specific sources were cited for this answer.*"
+                
+                # Add low confidence warning if needed
+                if best_score < 0.50:
+                    citations_text += f"\n\n⚠️ *Low confidence: Best relevance score is {best_score:.0%}. "
+                    citations_text += "The answer may be less reliable or the question may be partially outside the document scope.*"
+                
+                yield {"type": "citations", "content": citations_text}
+                yield {"type": "metadata_update", "content": cited_metadata}
+            
+            return stream_generator()
         
-        # Step 6: Parse which citations were actually used in the answer
-        # Handle both formats: [1][2] and [1, 2] or [1,2]
-        cited_indices = set()
-        
-        # Pattern 1: Separate brackets [1][2]
-        citation_pattern_separate = r'\[(\d+)\]'
-        matches = re.findall(citation_pattern_separate, answer)
-        for match in matches:
-            cited_indices.add(int(match))
-        
-        # Pattern 2: Combined brackets [1, 2] or [1,2]
-        citation_pattern_combined = r'\[(\d+(?:\s*,\s*\d+)+)\]'
-        combined_matches = re.findall(citation_pattern_combined, answer)
-        for match in combined_matches:
-            # Split by comma and extract all numbers
-            numbers = re.findall(r'\d+', match)
-            for num in numbers:
-                cited_indices.add(int(num))
-        
-        # Filter to only show cited sources
-        cited_citations = []
-        cited_metadata = []
-        for i, (citation, metadata) in enumerate(zip(citations, chunks_metadata), 1):
-            if i in cited_indices:
-                cited_citations.append(citation)
-                metadata_copy = metadata.copy()
-                metadata_copy['cited'] = True
-                cited_metadata.append(metadata_copy)
-            else:
-                # Still include in metadata but mark as not cited
-                metadata_copy = metadata.copy()
-                metadata_copy['cited'] = False
-                cited_metadata.append(metadata_copy)
-        
-        # Step 7: Format final response
-        response = f"{answer}\n\n"
-        
-        if cited_citations:
-            response += "---\n\n**📚 Sources:**\n\n"
-            response += "\n".join(cited_citations)
+        # NON-STREAMING MODE with JSON parsing
         else:
-            # If no citations were used, show a note
-            response += "\n\n*Note: No specific sources were cited for this answer.*"
-        
-        return response, cited_metadata
+            # Generate answer (LLM will return JSON per prompt)
+            print(f"🤖 Generating answer with JSON format...")
+            answer = ""
+            highlights_map = {}
+            
+            try:
+                response_obj = llm.invoke(messages)
+                raw_response = response_obj.content
+                print(f"📥 Raw response received ({len(raw_response)} chars)")
+                
+                # Extract JSON from response (might have markdown code blocks or extra text)
+                json_str = raw_response.strip()
+                
+                # Remove markdown code blocks if present
+                if json_str.startswith('```'):
+                    # Extract content between ```json and ```
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', json_str, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1)
+                    else:
+                        # Try to find JSON object
+                        json_match = re.search(r'\{.*\}', json_str, re.DOTALL)
+                        if json_match:
+                            json_str = json_match.group(0)
+                
+                # Parse JSON
+                parsed = json.loads(json_str)
+                answer = parsed.get('answer', '')
+                highlights_map = parsed.get('highlights', {})
+                
+                # Validate and normalize highlights_map
+                if not isinstance(highlights_map, dict):
+                    print(f"⚠️ Highlights map is not a dict: {type(highlights_map)}. Converting...")
+                    highlights_map = {}
+                
+                # Ensure all values are lists and convert keys to int
+                normalized_highlights = {}
+                for key, value in highlights_map.items():
+                    try:
+                        int_key = int(key) if isinstance(key, str) else key
+                        if isinstance(value, str):
+                            normalized_highlights[int_key] = [value]
+                        elif isinstance(value, list):
+                            normalized_highlights[int_key] = value
+                        else:
+                            normalized_highlights[int_key] = []
+                    except (ValueError, TypeError):
+                        continue
+                
+                highlights_map = normalized_highlights
+                print(f"✅ Parsed JSON: answer length={len(answer)}, highlights={len(highlights_map)} sources")
+                
+            except json.JSONDecodeError as json_err:
+                print(f"⚠️ JSON parsing failed: {json_err}")
+                print(f"   Response preview: {raw_response[:500]}")
+                print(f"   Attempting fallback...")
+                
+                # Fallback: treat as regular text and parse citations
+                answer = raw_response
+                citations_with_quotes = parse_citations_with_quotes(answer)
+                highlights_map = citations_with_quotes
+                print(f"   ✅ Using fallback citation parsing")
+                
+            except Exception as e:
+                error_msg = str(e)
+                error_type = type(e).__name__
+                print(f"❌ Error during generation ({error_type}): {error_msg}")
+                return f"⚠️ Error generating response: {error_msg}\n\nPlease try again or check your API key.", []
+            
+            # Step 6: Get cited indices from answer
+            cited_indices = set()
+            citation_pattern = r'\[(\d+)\]'
+            matches = re.findall(citation_pattern, answer)
+            for match in matches:
+                cited_indices.add(int(match))
+            
+            # Step 6.5: Process highlights from structured output
+            # highlights_map is Dict[int, List[str]] - each citation can have multiple highlights
+            print(f"🎯 Processing highlights for PDF linking...")
+            
+            # Filter to only show cited sources and rebuild citations with highlights
+            cited_citations = []
+            cited_metadata = []
+            
+            for i, metadata in enumerate(chunks_metadata, 1):
+                if i in cited_indices:
+                    # Get highlights for this citation
+                    highlight_list = highlights_map.get(i, [])
+                    if isinstance(highlight_list, str):
+                        highlight_list = [highlight_list]  # Convert single string to list
+                    
+                    source = metadata.get('source', 'Unknown')
+                    source_url = metadata.get('source_url', None)
+                    page = metadata.get('page', 'N/A')
+                    score = metadata.get('score', 0)
+                    
+                    # Use first highlight for the main link (most relevant)
+                    primary_highlight = highlight_list[0] if highlight_list else ''
+                    
+                    if Config.ENABLE_SMART_HIGHLIGHTING and highlight_list:
+                        print(f"  ✅ Citation [{i}]: {len(highlight_list)} highlight(s)")
+                    
+                    citation = f"**[{i}]** "
+                    if source_url and page != 'N/A' and primary_highlight:
+                        # Add text fragment highlighting with comprehensive encoding
+                        encoded_text = encode_text_fragment(primary_highlight)
+                        page_link = f"{source_url}#page={page}:~:text={encoded_text}"
+                        citation += f"[{source}, Page {page}]({page_link})"
+                    elif source_url and page != 'N/A':
+                        page_link = f"{source_url}#page={page}"
+                        citation += f"[{source}, Page {page}]({page_link})"
+                    elif source_url:
+                        citation += f"[{source}]({source_url})"
+                    else:
+                        citation += f"{source}, Page {page}"
+                    
+                    citation += f" • {score:.0%}"
+                    
+                    cited_citations.append(citation)
+                    
+                    metadata_copy = metadata.copy()
+                    metadata_copy['cited'] = True
+                    metadata_copy['highlight_text'] = primary_highlight
+                    metadata_copy['all_highlights'] = highlight_list  # Store all highlights
+                    cited_metadata.append(metadata_copy)
+                else:
+                    metadata_copy = metadata.copy()
+                    metadata_copy['cited'] = False
+                    cited_metadata.append(metadata_copy)
+            
+            # Step 7: Format final response
+            # Use answer exactly as parsed from JSON - no modifications
+            response = answer + "\n\n"
+            
+            if cited_citations:
+                response += "---\n\n**📚 Sources:**\n\n"
+                response += "\n".join(cited_citations)
+            else:
+                response += "\n\n*Note: No specific sources were cited for this answer.*"
+            
+            # Add warning if relevance is marginal
+            if best_score < 0.50:
+                response += f"\n\n⚠️ *Low confidence: Best relevance score is {best_score:.0%}. "
+                response += "The answer may be less reliable or the question may be partially outside the document scope.*"
+            
+            return response, cited_metadata
         
     except Exception as e:
         print(f"❌ Error during generation: {e}")
         return f"⚠️ Error: {str(e)}", []
 
 
-def chat_with_document(query: str):
+def chat_with_document(query: str, stream: bool = False):
     """
     Main entry point for full RAG with generation.
-    Returns (answer, chunks_metadata) tuple.
+    
+    Args:
+        query: User question
+        stream: If True, returns generator for streaming
+    
+    Returns:
+        If stream=False: (answer, chunks_metadata) tuple
+        If stream=True: Generator yielding chunks
     """
-    return generate_answer_with_citations(query)
+    return generate_answer_with_citations(query, stream=stream)
 
 
 def retrieve_only(query: str):
@@ -504,37 +779,11 @@ def retrieve_only(query: str):
         if not reranked_points:
             return "No relevant information found.", []
         
-        # Deduplicate chunks from same PDF page (same as in generation mode)
-        page_to_chunks = {}
-        for point in reranked_points:
-            payload = point.payload
-            source_url = payload.get('source_url', None)
-            page = payload.get('page', 'N/A')
-            key = (source_url, page)
-            
-            if key not in page_to_chunks:
-                page_to_chunks[key] = []
-            page_to_chunks[key].append(point)
-        
-        # Merge chunks from same page
-        deduplicated_points = []
-        for key, chunks in page_to_chunks.items():
-            if len(chunks) == 1:
-                deduplicated_points.append(chunks[0])
-            else:
-                best_chunk = max(chunks, key=lambda x: x.score)
-                combined_content = "\n\n".join([c.payload.get('document', '') for c in chunks])
-                best_chunk.payload['document'] = combined_content
-                best_chunk.payload['merged_count'] = len(chunks)
-                deduplicated_points.append(best_chunk)
-        
-        deduplicated_points.sort(key=lambda x: x.score, reverse=True)
-        
         # Build response and metadata
         response = "**🎯 Retrieved Information**\n\n"
         chunks_metadata = []
         
-        for i, point in enumerate(deduplicated_points, 1):
+        for i, point in enumerate(reranked_points, 1):
             payload = point.payload
             source = payload.get('source', 'Unknown')
             source_url = payload.get('source_url', None)
@@ -542,13 +791,9 @@ def retrieve_only(query: str):
             chunk_title = payload.get('chunk_title', '')
             document = payload.get('document', '')
             score = point.score
-            merged_count = payload.get('merged_count', 1)
             
             # Content first
-            response += f"**Chunk {i}** (Score: {score:.2%})"
-            if merged_count > 1:
-                response += f" *(merged {merged_count} chunks)*"
-            response += f"\n{document}\n\n"
+            response += f"**Chunk {i}** (Score: {score:.2%})\n{document}\n\n"
             
             # Citation
             if Config.ENABLE_CITATIONS:
@@ -572,7 +817,6 @@ def retrieve_only(query: str):
                 "page": page,
                 "chunk_title": chunk_title,
                 "score": score,
-                "merged_count": merged_count,
                 "preview": document[:150] + "..." if len(document) > 150 else document,
                 "cited": True  # In retrieval-only mode, all chunks are "cited" (shown)
             })
