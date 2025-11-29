@@ -21,9 +21,9 @@ llm = ChatGoogleGenerativeAI(
 class RAGResponse(BaseModel):
     """Structured response from LLM with clean answer and highlight mappings."""
     answer: str = Field(description="The complete answer with simple citation markers like [1], [2]")
-    highlights: Dict[int, List[str]] = Field(
-        description="Mapping of citation number to list of exact quotes from that source. Each quote should be 5-15 words taken exactly from the context.",
-        example={1: ["exact quote from source 1"], 2: ["first quote from source 2", "second quote from source 2"]}
+    highlights: Dict[int, str] = Field(
+        description="Mapping of citation number to a SINGLE exact quote. Each unique highlight gets its own citation number, even if from the same source chunk. Quote should be 5-15 words taken exactly from the context.",
+        example={1: "exact quote from source 1", 2: "another quote from source 1 (different highlight)", 3: "quote from source 2"}
     )
 
 # Note: Using JSON mode in prompt instead of structured output binding
@@ -40,19 +40,27 @@ You MUST provide your response in a structured format with clean citations and s
 
 Response Structure:
 1. "answer": Your complete answer with SIMPLE citation markers [1], [2], [3]
-2. "highlights": A mapping of citation numbers to lists of exact 5-15 word quotes from those sources
+2. "highlights": A mapping where EACH unique highlight gets its OWN citation number
+
+IMPORTANT - Citation Numbering:
+- Each unique highlight text gets its OWN citation number, even if from the same source chunk
+- If you use 2 different quotes from [Source 1], they should be [1] and [2] (not both [1])
+- Each citation number in "highlights" maps to exactly ONE quote string
+- Citation numbers must match the [1], [2], [3] markers used in your answer
 
 Citation Strategy in Answer:
 - Use SIMPLE markers: [1], [2], [3] (NO quotes inline)
+- Each marker corresponds to ONE specific highlight quote
+- If you reference the same chunk multiple times with different quotes, use different numbers: [1] and [2]
 - Cite ONCE per paragraph/idea, not every sentence
 - Place at END of paragraph if all info from one source
 - Each source in context is numbered [Source X]
 
 Highlights Mapping Rules:
-- Extract 1-3 exact quotes (5-15 words each) from each cited source
+- Each citation number maps to ONE exact quote (5-15 words)
 - Quotes must be EXACTLY from the context without modification
-- Quotes should directly support the claims in your answer
-- If you use multiple pieces of info from same source, include multiple highlights
+- If same chunk has multiple relevant quotes, give each a different number
+- Example: If [Source 1] has two relevant quotes, use [1] and [2] with different quotes
 
 EXCELLENT ✓:
 - Clean answer with simple [1], [2]
@@ -83,15 +91,38 @@ IMPORTANT: You MUST respond with a valid JSON object in this exact format:
 {{
   "answer": "Your answer with simple citations [1], [2], etc.",
   "highlights": {{
-    1: ["exact quote 1 from source 1", "exact quote 2 from source 1"],
-    2: ["exact quote from source 2"]
+    "1": "exact quote 1 from source 1",
+    "2": "exact quote 2 from source 1 (different highlight, same or different chunk)",
+    "3": "exact quote from source 2"
   }}
 }}
+
+Note: Each unique highlight gets its own number. If you use 2 different quotes from the same chunk, use [1] and [2], not both [1].
 
 Answer:""")
 ])
 
 print("✅ Loaded RAG prompt template with inline citations")
+
+
+def normalize_text_for_matching(text: str) -> str:
+    """
+    Normalize text for robust matching between highlights and chunks.
+    Used for finding which chunk contains a highlight text.
+    
+    Args:
+        text: Text to normalize
+        
+    Returns:
+        Normalized text (lowercase, whitespace normalized, punctuation cleaned)
+    """
+    # Lowercase
+    text = text.lower()
+    # Normalize whitespace (multiple spaces/newlines to single space)
+    text = re.sub(r'\s+', ' ', text)
+    # Remove trailing punctuation for matching
+    text = text.strip('.,;:!?')
+    return text.strip()
 
 
 def encode_text_fragment(text: str) -> str:
@@ -604,22 +635,38 @@ def generate_answer_with_citations(query: str, stream: bool = False):
                     print(f"⚠️ Highlights map is not a dict: {type(highlights_map)}. Converting...")
                     highlights_map = {}
                 
-                # Ensure all values are lists and convert keys to int
+                # Normalize: convert keys to int, ensure values are strings
                 normalized_highlights = {}
                 for key, value in highlights_map.items():
                     try:
-                        int_key = int(key) if isinstance(key, str) else key
-                        if isinstance(value, str):
-                            normalized_highlights[int_key] = [value]
-                        elif isinstance(value, list):
-                            normalized_highlights[int_key] = value
+                        # Convert key to int (handles both "1" and 1)
+                        if isinstance(key, str):
+                            # Try to convert string to int
+                            int_key = int(key)
+                        elif isinstance(key, int):
+                            int_key = key
                         else:
-                            normalized_highlights[int_key] = []
-                    except (ValueError, TypeError):
+                            print(f"⚠️ Skipping invalid key type: {type(key)}")
+                            continue
+                        
+                        # Ensure value is a string
+                        if isinstance(value, str):
+                            normalized_highlights[int_key] = value
+                        elif isinstance(value, list) and len(value) > 0:
+                            # If LLM returns list, take first item
+                            normalized_highlights[int_key] = value[0] if isinstance(value[0], str) else str(value[0])
+                        elif value is None:
+                            # Skip None values
+                            continue
+                        else:
+                            # Try to convert to string
+                            normalized_highlights[int_key] = str(value)
+                    except (ValueError, TypeError) as e:
+                        print(f"⚠️ Error normalizing key '{key}': {e}")
                         continue
                 
                 highlights_map = normalized_highlights
-                print(f"✅ Parsed JSON: answer length={len(answer)}, highlights={len(highlights_map)} sources")
+                print(f"✅ Parsed JSON: answer length={len(answer)}, {len(highlights_map)} unique highlights")
                 
             except json.JSONDecodeError as json_err:
                 print(f"⚠️ JSON parsing failed: {json_err}")
@@ -638,43 +685,95 @@ def generate_answer_with_citations(query: str, stream: bool = False):
                 print(f"❌ Error during generation ({error_type}): {error_msg}")
                 return f"⚠️ Error generating response: {error_msg}\n\nPlease try again or check your API key.", []
             
-            # Step 6: Get cited indices from answer
+            # Step 6: Map each citation number to its chunk
+            # highlights_map is Dict[int, str] - each citation already maps to one highlight
+            print(f"🎯 Mapping citations to chunks...")
+            
+            citation_to_chunk = {}  # {citation_num: chunk_index}
+            
+            # Map each citation to its chunk by finding which chunk contains the highlight
+            for cite_num, highlight_text in highlights_map.items():
+                if highlight_text:
+                    normalized_highlight = normalize_text_for_matching(highlight_text)
+                    print(f"  🔍 Searching for citation [{cite_num}]: '{highlight_text[:60]}...'")
+                    
+                    # Find which chunk contains this highlight
+                    chunk_idx = None
+                    best_match_score = 0
+                    
+                    for idx, point in enumerate(reranked_points, 1):
+                        chunk_text = point.payload.get('document', '')
+                        normalized_chunk = normalize_text_for_matching(chunk_text)
+                        
+                        # Try exact substring match first
+                        if normalized_highlight in normalized_chunk:
+                            chunk_idx = idx
+                            best_match_score = 1.0
+                            print(f"    ✅ Exact match in Chunk {idx}")
+                            break
+                        
+                        # Try word-based matching (check if most words from highlight are in chunk)
+                        highlight_words = set(normalized_highlight.split())
+                        chunk_words = set(normalized_chunk.split())
+                        if len(highlight_words) > 0:
+                            # Calculate word overlap ratio
+                            common_words = highlight_words.intersection(chunk_words)
+                            match_score = len(common_words) / len(highlight_words)
+                            
+                            # Require at least 70% word overlap
+                            if match_score >= 0.7 and match_score > best_match_score:
+                                best_match_score = match_score
+                                chunk_idx = idx
+                                print(f"    ⚠️ Partial match in Chunk {idx} ({match_score:.0%} word overlap)")
+                    
+                    if chunk_idx:
+                        citation_to_chunk[cite_num] = chunk_idx
+                        print(f"  📌 Citation [{cite_num}] → Chunk {chunk_idx} (match: {best_match_score:.0%})")
+                    else:
+                        print(f"  ❌ Citation [{cite_num}]: Could not find chunk for highlight")
+                        print(f"      Highlight: '{highlight_text[:100]}...'")
+                        # Show first 200 chars of each chunk for debugging
+                        for idx, point in enumerate(reranked_points[:3], 1):
+                            chunk_preview = point.payload.get('document', '')[:200]
+                            print(f"      Chunk {idx} preview: '{chunk_preview}...'")
+            
+            # Step 7: Get cited indices from answer
             cited_indices = set()
             citation_pattern = r'\[(\d+)\]'
             matches = re.findall(citation_pattern, answer)
             for match in matches:
                 cited_indices.add(int(match))
             
-            # Step 6.5: Process highlights from structured output
-            # highlights_map is Dict[int, List[str]] - each citation can have multiple highlights
-            print(f"🎯 Processing highlights for PDF linking...")
+            print(f"📋 Found {len(cited_indices)} citation(s) in answer: {sorted(cited_indices)}")
+            print(f"📋 Have {len(highlights_map)} highlight(s) in map: {sorted(highlights_map.keys())}")
+            print(f"📋 Mapped {len(citation_to_chunk)} citation(s) to chunks: {sorted(citation_to_chunk.keys())}")
             
-            # Filter to only show cited sources and rebuild citations with highlights
+            # Step 8: Build citations - each unique highlight gets its own entry
             cited_citations = []
             cited_metadata = []
             
-            for i, metadata in enumerate(chunks_metadata, 1):
-                if i in cited_indices:
-                    # Get highlights for this citation
-                    highlight_list = highlights_map.get(i, [])
-                    if isinstance(highlight_list, str):
-                        highlight_list = [highlight_list]  # Convert single string to list
+            # Build citations for each cited number
+            for cite_num in sorted(cited_indices):
+                highlight_text = highlights_map.get(cite_num, '')
+                chunk_idx = citation_to_chunk.get(cite_num)
+                
+                # Fallback: if mapping failed, use cite_num as chunk_idx (1-indexed)
+                if chunk_idx is None:
+                    print(f"  ⚠️ Citation [{cite_num}] mapping failed, using cite_num as chunk_idx")
+                    chunk_idx = cite_num
+                
+                # Ensure chunk_idx is within bounds
+                if 1 <= chunk_idx <= len(chunks_metadata):
+                    metadata = chunks_metadata[chunk_idx - 1]  # chunks_metadata is 0-indexed
                     
                     source = metadata.get('source', 'Unknown')
                     source_url = metadata.get('source_url', None)
                     page = metadata.get('page', 'N/A')
                     score = metadata.get('score', 0)
                     
-                    # Use first highlight for the main link (most relevant)
-                    primary_highlight = highlight_list[0] if highlight_list else ''
-                    
-                    if Config.ENABLE_SMART_HIGHLIGHTING and highlight_list:
-                        print(f"  ✅ Citation [{i}]: {len(highlight_list)} highlight(s)")
-                    
-                    citation = f"**[{i}]** "
-                    if source_url and page != 'N/A' and primary_highlight:
-                        # Add text fragment highlighting with comprehensive encoding
-                        encoded_text = encode_text_fragment(primary_highlight)
+                    citation = f"**[{cite_num}]** "
+                    if source_url and page != 'N/A' and highlight_text:
+                        encoded_text = encode_text_fragment(highlight_text)
                         page_link = f"{source_url}#page={page}:~:text={encoded_text}"
                         citation += f"[{source}, Page {page}]({page_link})"
                     elif source_url and page != 'N/A':
@@ -686,18 +785,39 @@ def generate_answer_with_citations(query: str, stream: bool = False):
                         citation += f"{source}, Page {page}"
                     
                     citation += f" • {score:.0%}"
-                    
                     cited_citations.append(citation)
-                    
-                    metadata_copy = metadata.copy()
-                    metadata_copy['cited'] = True
-                    metadata_copy['highlight_text'] = primary_highlight
-                    metadata_copy['all_highlights'] = highlight_list  # Store all highlights
-                    cited_metadata.append(metadata_copy)
                 else:
-                    metadata_copy = metadata.copy()
+                    print(f"  ❌ Citation [{cite_num}]: Invalid chunk_idx {chunk_idx} (max: {len(chunks_metadata)})")
+            
+            print(f"📚 Built {len(cited_citations)} citation(s) for display")
+            
+            # Build metadata - mark chunks as cited and store all citation numbers
+            for i, metadata in enumerate(chunks_metadata, 1):
+                metadata_copy = metadata.copy()
+                
+                # Find all citation numbers that map to this chunk
+                # Include both successful mappings and fallback cases (cite_num == chunk_idx)
+                chunk_citations = []
+                
+                # From successful mappings
+                chunk_citations.extend([cn for cn, ci in citation_to_chunk.items() if ci == i])
+                
+                # From fallback cases (cite_num used as chunk_idx)
+                for cite_num in cited_indices:
+                    if cite_num not in citation_to_chunk and cite_num == i:
+                        chunk_citations.append(cite_num)
+                
+                chunk_highlights = [highlights_map[cn] for cn in chunk_citations if cn in highlights_map and highlights_map[cn]]
+                
+                if chunk_citations:
+                    metadata_copy['cited'] = True
+                    metadata_copy['citation_numbers'] = sorted(set(chunk_citations))
+                    metadata_copy['highlight_text'] = chunk_highlights[0] if chunk_highlights else ''
+                    metadata_copy['all_highlights'] = chunk_highlights
+                else:
                     metadata_copy['cited'] = False
-                    cited_metadata.append(metadata_copy)
+                
+                cited_metadata.append(metadata_copy)
             
             # Step 7: Format final response
             # Use answer exactly as parsed from JSON - no modifications

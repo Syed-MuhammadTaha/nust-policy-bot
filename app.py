@@ -52,9 +52,14 @@ with st.sidebar:
                     if chunk.get('chunk_title'):
                         st.markdown(f"**Section:** {chunk['chunk_title']}")
                     st.markdown(f"**Relevance:** {chunk['score']:.2%}")
-                    st.success("✅ **Cited in answer**")
                     
-                    # Show highlight text(s) if available
+                    # Show citation numbers that map to this chunk
+                    citation_nums = chunk.get('citation_numbers', [])
+                    if citation_nums:
+                        citation_str = ', '.join([f'[{n}]' for n in sorted(citation_nums)])
+                        st.success(f"✅ **Cited as:** {citation_str}")
+                    
+                    # Show highlight text(s) with their citation numbers
                     all_highlights = chunk.get('all_highlights', [])
                     if not all_highlights and chunk.get('highlight_text'):
                         all_highlights = [chunk.get('highlight_text')]
@@ -62,20 +67,37 @@ with st.sidebar:
                     if all_highlights:
                         st.divider()
                         if len(all_highlights) == 1:
-                            st.markdown("**🎯 Highlighted Text:**")
+                            cite_num = citation_nums[0] if citation_nums else ''
+                            st.markdown(f"**🎯 Highlight [{cite_num}]:**")
                             st.info(f'"{all_highlights[0]}"')
                         else:
-                            st.markdown(f"**🎯 {len(all_highlights)} Highlighted Texts:**")
-                            for idx, highlight in enumerate(all_highlights, 1):
-                                st.info(f'{idx}. "{highlight}"')
+                            st.markdown(f"**🎯 {len(all_highlights)} Highlights:**")
+                            for idx, highlight in enumerate(all_highlights):
+                                cite_num = citation_nums[idx] if idx < len(citation_nums) else ''
+                                st.info(f'[{cite_num}] "{highlight}"')
                     
                     st.divider()
                     st.markdown(f"*{chunk['preview']}*")
                     
-                    # Add link if available (with highlighting if highlight_text exists)
+                    # Add links for each citation number with its specific highlight
                     if chunk.get('source_url') and chunk['page'] != 'N/A':
-                        if chunk.get('highlight_text'):
-                            # Comprehensive URL encoding for text fragments
+                        citation_nums = chunk.get('citation_numbers', [])
+                        all_highlights = chunk.get('all_highlights', [])
+                        
+                        if citation_nums and all_highlights:
+                            # Create separate link for each citation number
+                            for idx, cite_num in enumerate(citation_nums):
+                                highlight = all_highlights[idx] if idx < len(all_highlights) else chunk.get('highlight_text', '')
+                                if highlight:
+                                    from rag_chain import encode_text_fragment
+                                    encoded_text = encode_text_fragment(highlight)
+                                    page_link = f"{chunk['source_url']}#page={chunk['page']}:~:text={encoded_text}"
+                                    st.markdown(f"[📖 View [{cite_num}] in PDF]({page_link})")
+                                else:
+                                    page_link = f"{chunk['source_url']}#page={chunk['page']}"
+                                    st.markdown(f"[📖 View [{cite_num}] in PDF]({page_link})")
+                        elif chunk.get('highlight_text'):
+                            # Single highlight
                             from rag_chain import encode_text_fragment
                             encoded_text = encode_text_fragment(chunk['highlight_text'])
                             page_link = f"{chunk['source_url']}#page={chunk['page']}:~:text={encoded_text}"
