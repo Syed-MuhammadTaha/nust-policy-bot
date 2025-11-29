@@ -1,27 +1,34 @@
-## 📄 Document RAG System with All-Cloud Hybrid Retrieval
+## 📄 Document RAG System with AI Generation
 
-A production-grade document retrieval system with **state-of-the-art hybrid search** powered entirely by cloud APIs:
-- ☁️ **Dense embeddings** via Jina Cloud API (high-quality semantic search)
+A production-grade RAG system with **hybrid search + AI generation** powered entirely by cloud APIs:
+- ☁️ **Dense embeddings** via Jina Cloud API (semantic search)
 - ☁️ **Sparse BM25** via Qdrant built-in (keyword matching)
-- ☁️ **Reranking** via Jina Reranker Cloud API (precision reranking)
+- ☁️ **Reranking** via Jina Reranker Cloud API (precision)
+- 🤖 **AI Generation** via Google Gemini (natural answers)
+- 📚 **Grounded Citations** with clickable links & text highlighting
 
-**Perfect for slow compute/internet** - all processing done in the cloud!
+**Perfect for slow compute** - all processing done in the cloud!
 
-Powered by Qdrant vector database.
+Powered by Qdrant + Google Gemini.
 
 ## 🌟 Key Features
 
-- **🎯 All-Cloud Hybrid Search**: No local compute needed!
-  - ☁️ **Dense Embeddings** (Jina Cloud API): High-quality semantic understanding
-  - ☁️ **BM25 Keyword** (Qdrant built-in): Fast keyword matching
-  - ☁️ **Reranking** (Jina Reranker API): Precision reranking
-- **📚 Grounded Citations**: Every response includes clickable links to source PDFs with page numbers
-- **📤 Document Upload**: Upload PDFs via Streamlit UI or batch process
-- **🗄️ Qdrant Vector Store**: Production-ready with web UI
-- **📊 Structure-Aware Chunking**: Preserves semantic boundaries for better context
+- **🤖 AI-Powered Answers**: Google Gemini generates natural responses from retrieved context
+- **🎯 Hybrid Search Pipeline**: 
+  - ☁️ Dense Embeddings (Jina) + BM25 (Qdrant) → Rerank (Jina) → Generate (Gemini)
+- **📚 Grounded Citations**: 
+  - Clickable links to source PDFs
+  - Text fragment highlighting (jumps to exact text in PDF!)
+  - Page-level deep linking
+- **⚙️ Dual Modes**: 
+  - AI Generation (natural answers with citations)
+  - Retrieval Only (raw chunks for debugging)
+- **📤 Document Upload**: Upload PDFs via UI or batch process
+- **🗄️ Qdrant Vector Store**: Production-ready with web dashboard
+- **📊 Structure-Aware Chunking**: Preserves semantic boundaries
 - **💾 Persistent Storage**: Data survives restarts
-- **⚡ Fast on Slow Machines**: All heavy lifting done in the cloud
-- **🎨 Visual Dashboard**: Explore embeddings at http://localhost:6333/dashboard
+- **⚡ All-Cloud Processing**: Fast even on slow machines
+- **🎨 Visual Dashboard**: http://localhost:6333/dashboard
 
 ## 🔬 How All-Cloud Hybrid Search Works
 
@@ -81,16 +88,19 @@ Copy the example environment file:
 cp env.example .env
 ```
 
-Edit `.env` and add your **JINA_API_KEY** (required for dense embeddings):
+Edit `.env` and add your API keys:
 
 ```env
 JINA_API_KEY=your_jina_api_key_here
+GOOGLE_API_KEY=your_google_api_key_here
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
 QDRANT_COLLECTION_NAME=hybrid-search
 ```
 
-Get your free Jina API key at [jina.ai](https://jina.ai)
+Get your API keys:
+- **Jina**: [jina.ai](https://jina.ai) (free tier: 1M tokens/month)
+- **Google**: [makersuite.google.com](https://makersuite.google.com/app/apikey) (free tier: 60 queries/min)
 
 ### 3. Start Qdrant
 
@@ -111,12 +121,27 @@ streamlit run app.py
 ```
 
 The app will:
-- Connect to Jina Cloud API (dense embeddings + reranking)
+- Connect to Jina Cloud (embeddings + reranking)
+- Connect to Google Gemini (AI generation)
 - Use Qdrant's built-in BM25 for keyword search
 - Auto-process PDFs in `data/` folder
 - Open at http://localhost:8501
 
 **Note**: First run is instant - no model downloads needed! All processing is cloud-based.
+
+### Usage Modes
+
+**🤖 AI Generation Mode** (Default):
+- Natural language answers
+- Synthesizes information from multiple sources
+- Includes grounded citations with links
+
+**📄 Retrieval Only Mode**:
+- Shows raw retrieved chunks
+- Good for debugging/verification
+- See exactly what the AI sees
+
+Toggle between modes in the sidebar!
 
 ## 📊 Access Points
 

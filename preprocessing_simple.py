@@ -155,7 +155,7 @@ class SimplePreprocessor:
                     section_end = all_matches[i + 1][0]
                 else:
                     section_end = len(text)
-                
+                    
                 section_text = text[section_start:section_end].strip()
                 
                 # Only create section if it has meaningful content
@@ -173,12 +173,12 @@ class SimplePreprocessor:
                         'title': 'Introduction',
                         'text': intro_text
                     })
-        else:
+            else:
             # No structural markers found - treat as single section
-            sections.append({
-                'title': '',
-                'text': text
-            })
+                sections.append({
+                    'title': '',
+                    'text': text
+                })
         
         return sections
     

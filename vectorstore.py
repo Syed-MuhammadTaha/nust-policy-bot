@@ -1,7 +1,6 @@
 import os
 import json
 import uuid
-import re
 from typing import List, Tuple, Dict
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, models
@@ -14,7 +13,7 @@ print("🔄 Loading Jina Cloud API...")
 print(f"   ☁️  Model: {Config.JINA_EMBEDDING_MODEL}")
 
 jina_embeddings = JinaEmbeddings(
-    jina_api_key=Config.JINA_API_KEY,
+    jina_api_key=Config.JINA_API_KEY, 
     model_name=Config.JINA_EMBEDDING_MODEL
 )
 
@@ -128,14 +127,14 @@ def process_and_store(file_path: str, force_reprocess: bool = False, chunking_st
     strategy = chunking_strategy or Config.CHUNKING_STRATEGY
     
     try:
-        # Use simplified but effective preprocessing
+    # Use simplified but effective preprocessing
         docs = preprocess_pdf_simple(
             file_path,
             chunk_size=Config.CHUNK_SIZE,
             chunk_overlap=Config.CHUNK_OVERLAP,
             strategy=strategy
         )
-        
+    
         print(f"📄 Processing {len(docs)} chunks from '{file_name}'...")
         
         # Extract text content for embedding
@@ -151,18 +150,6 @@ def process_and_store(file_path: str, force_reprocess: bool = False, chunking_st
         # Create points with embeddings and full text for BM25
         points = []
         for idx, (doc, dense_emb) in enumerate(zip(docs, dense_embeddings)):
-            # Extract text for highlighting - keep it EXACTLY as in PDF
-            raw_text = doc.page_content[:80].strip()
-            
-            # MINIMAL normalization - only fix spacing issues:
-            # 1. Collapse multiple spaces/newlines to single space
-            # 2. KEEP all special chars (hyphens, slashes, etc.) - they're in the PDF!
-            normalized = re.sub(r'\s+', ' ', raw_text)  # Only collapse whitespace
-            
-            # Take first 4-6 words for reliable matching
-            words = normalized.split()[:6]
-            highlight_text = ' '.join(words) if words else ''
-            
             point = PointStruct(
                 id=str(uuid.uuid4()),  # Generate unique UUID for each point
                 vector={
@@ -174,18 +161,17 @@ def process_and_store(file_path: str, force_reprocess: bool = False, chunking_st
                     "source_url": source_url,  # URL for grounded citations
                     "page": doc.metadata.get('page', 'N/A'),
                     "chunk_title": doc.metadata.get('chunk_title', ''),
-                    "highlight_text": highlight_text,  # For PDF search highlighting
                 }
             )
             points.append(point)
-        
+    
         # Upload to Qdrant
         print(f"⬆️  Uploading {len(points)} points to Qdrant...")
         operation_info = qdrant_client.upsert(
             collection_name=Config.QDRANT_COLLECTION_NAME,
             points=points
         )
-        
+    
         # Update processed files metadata
         processed_files = get_processed_files()
         processed_files[file_name] = {
@@ -194,12 +180,12 @@ def process_and_store(file_path: str, force_reprocess: bool = False, chunking_st
             'chunking_strategy': strategy,
             'chunk_size': Config.CHUNK_SIZE,
             'chunk_overlap': Config.CHUNK_OVERLAP,
-            'processed_at': str(os.path.getmtime(file_path)),
-            'embedding_source': 'Jina Cloud API',
-            'search_methods': ['Dense (Jina)', 'BM25 (Qdrant)', 'Rerank (Jina)']
+                'processed_at': str(os.path.getmtime(file_path)),
+                'embedding_source': 'Jina Cloud API',
+                'search_methods': ['Dense (Jina)', 'BM25 (Qdrant)', 'Rerank (Jina)']
         }
         save_processed_files(processed_files)
-        
+    
         print(f"✅ Successfully processed '{file_name}'")
         return True, f"Successfully processed '{file_name}' using {strategy} strategy with Jina Cloud embeddings", len(docs)
         
@@ -273,7 +259,7 @@ def get_vectorstore_stats() -> Dict:
         
         if Config.QDRANT_COLLECTION_NAME not in collection_names:
             return {"exists": False}
-        
+    
         # Get collection info
         collection_info = qdrant_client.get_collection(Config.QDRANT_COLLECTION_NAME)
         total_points = collection_info.points_count
@@ -284,14 +270,14 @@ def get_vectorstore_stats() -> Dict:
         return {
             "exists": True,
             "total_files": len(processed_files),
-            "total_chunks": total_points,
-            "files": list(processed_files.keys()),
-            "search_methods": [
-                "Dense Semantic (Jina Cloud)",
-                "BM25 Keyword (Qdrant)",
-                "Reranking (Jina Cloud)"
-            ]
-        }
+                "total_chunks": total_points,
+                "files": list(processed_files.keys()),
+                "search_methods": [
+                    "Dense Semantic (Jina Cloud)",
+                    "BM25 Keyword (Qdrant)",
+                    "Reranking (Jina Cloud)"
+                ]
+            }
     except Exception as e:
         print(f"Error getting stats: {e}")
         return {"exists": False, "error": str(e)}

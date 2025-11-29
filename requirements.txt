@@ -3,6 +3,7 @@ langchain
 langchain-core
 langchain-community
 langchain-text-splitters
+langchain-google-genai
 qdrant-client
 requests
 tiktoken
